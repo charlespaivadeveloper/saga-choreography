@@ -1,0 +1,227 @@
+version: '3.8'
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    hostname: zookeeper
+    container_name: saga-zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - saga-network
+
+  kafka-broker:
+    image: confluentinc/cp-kafka:7.5.0
+    hostname: kafka-broker
+    container_name: saga-kafka-broker
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broker:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+    networks:
+      - saga-network
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: saga-kafka-ui
+    depends_on:
+      - kafka-broker
+    ports:
+      - "8085:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-broker:29092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    networks:
+      - saga-network
+
+  postgresql-order:
+    image: postgres:15-alpine
+    container_name: saga-postgres-order
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: order_db
+      POSTGRES_USER: saga_user
+      POSTGRES_PASSWORD: saga_password
+    volumes:
+      - postgres_order_data:/var/lib/postgresql/data
+    networks:
+      - saga-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U saga_user -d order_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgresql-payment:
+    image: postgres:15-alpine
+    container_name: saga-postgres-payment
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: payment_db
+      POSTGRES_USER: saga_user
+      POSTGRES_PASSWORD: saga_password
+    volumes:
+      - postgres_payment_data:/var/lib/postgresql/data
+    networks:
+      - saga-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U saga_user -d payment_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgresql-inventory:
+    image: postgres:15-alpine
+    container_name: saga-postgres-inventory
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_DB: inventory_db
+      POSTGRES_USER: saga_user
+      POSTGRES_PASSWORD: saga_password
+    volumes:
+      - postgres_inventory_data:/var/lib/postgresql/data
+    networks:
+      - saga-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U saga_user -d inventory_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  zipkin:
+    image: openzipkin/zipkin:3.0
+    container_name: saga-zipkin
+    ports:
+      - "9411:9411"
+    networks:
+      - saga-network
+
+  prometheus:
+    image: prom/prometheus:v2.47.2
+    container_name: saga-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    networks:
+      - saga-network
+
+  grafana:
+    image: grafana/grafana:10.2.2
+    container_name: saga-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - saga-network
+
+  order-service:
+    build:
+      context: ./order-service/order-container
+      dockerfile: Dockerfile
+    container_name: saga-order-service
+    depends_on:
+      kafka-broker:
+        condition: service_started
+      postgresql-order:
+        condition: service_healthy
+      zipkin:
+        condition: service_started
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgresql-order:5432/order_db
+      SPRING_DATASOURCE_USERNAME: saga_user
+      SPRING_DATASOURCE_PASSWORD: saga_password
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka-broker:29092
+      SPRING_PROFILES_ACTIVE: docker
+    networks:
+      - saga-network
+
+  payment-service:
+    build:
+      context: ./payment-service/payment-container
+      dockerfile: Dockerfile
+    container_name: saga-payment-service
+    depends_on:
+      kafka-broker:
+        condition: service_started
+      postgresql-payment:
+        condition: service_healthy
+      zipkin:
+        condition: service_started
+    ports:
+      - "8081:8081"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgresql-payment:5432/payment_db
+      SPRING_DATASOURCE_USERNAME: saga_user
+      SPRING_DATASOURCE_PASSWORD: saga_password
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka-broker:29092
+      SPRING_PROFILES_ACTIVE: docker
+    networks:
+      - saga-network
+
+  inventory-service:
+    build:
+      context: ./inventory-service/inventory-container
+      dockerfile: Dockerfile
+    container_name: saga-inventory-service
+    depends_on:
+      kafka-broker:
+        condition: service_started
+      postgresql-inventory:
+        condition: service_healthy
+      zipkin:
+        condition: service_started
+    ports:
+      - "8082:8082"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgresql-inventory:5432/inventory_db
+      SPRING_DATASOURCE_USERNAME: saga_user
+      SPRING_DATASOURCE_PASSWORD: saga_password
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka-broker:29092
+      SPRING_PROFILES_ACTIVE: docker
+    networks:
+      - saga-network
+
+volumes:
+  postgres_order_data:
+  postgres_payment_data:
+  postgres_inventory_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  saga-network:
+    driver: bridge

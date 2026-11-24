@@ -1,0 +1,90 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-inventory-config
+  namespace: saga
+data:
+  POSTGRES_DB: inventory_db
+  POSTGRES_USER: saga_user
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-inventory-secret
+  namespace: saga
+type: Opaque
+stringData:
+  POSTGRES_PASSWORD: saga_password
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-inventory-pvc
+  namespace: saga
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-inventory
+  namespace: saga
+  labels:
+    app: postgres-inventory
+spec:
+  serviceName: postgres-inventory
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-inventory
+  template:
+    metadata:
+      labels:
+        app: postgres-inventory
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:15-alpine
+          ports:
+            - containerPort: 5432
+          envFrom:
+            - configMapRef:
+                name: postgres-inventory-config
+            - secretRef:
+                name: postgres-inventory-secret
+          volumeMounts:
+            - name: postgres-inventory-data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "saga_user", "-d", "inventory_db"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      volumes:
+        - name: postgres-inventory-data
+          persistentVolumeClaim:
+            claimName: postgres-inventory-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-inventory
+  namespace: saga
+spec:
+  selector:
+    app: postgres-inventory
+  ports:
+    - port: 5432
+      targetPort: 5432

@@ -1,0 +1,12 @@
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: true
+  kafka:
+    bootstrap-servers: ${spring.kafka.bootstrap-servers}
+
+logging:
+  level:
+    com.saga: DEBUG
+    org.springframework.kafka: INFO

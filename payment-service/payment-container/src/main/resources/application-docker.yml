@@ -1,0 +1,16 @@
+spring:
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://postgres-payment:5432/payment_db}
+    username: ${SPRING_DATASOURCE_USERNAME:saga_user}
+    password: ${SPRING_DATASOURCE_PASSWORD:saga_password}
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:kafka:9092}
+
+management:
+  zipkin:
+    tracing:
+      endpoint: http://zipkin:9411/api/v2/spans
+
+logging:
+  level:
+    com.saga: DEBUG
