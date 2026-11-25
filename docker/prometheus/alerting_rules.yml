@@ -1,0 +1,113 @@
+groups:
+  - name: saga_business
+    interval: 30s
+    rules:
+      - alert: HighSagaCancellationRate
+        expr: |
+          rate(saga_cancelled_total[5m]) /
+          (rate(saga_completed_total[5m]) + rate(saga_cancelled_total[5m]) + 0.001) > 0.20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SAGA cancellation rate above 20%"
+          description: "More than 20% of SAGA transactions are being cancelled in the last 5 minutes. Check payment/inventory rejection logs."
+
+      - alert: HighPaymentRejectionRate
+        expr: |
+          rate(saga_payment_rejected_total[5m]) /
+          (rate(saga_payment_reserved_total[5m]) + rate(saga_payment_rejected_total[5m]) + 0.001) > 0.30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Payment rejection rate above 30%"
+          description: "High proportion of payment rejections. Possible balance data issue or pricing problem."
+
+      - alert: HighInventoryRejectionRate
+        expr: |
+          rate(saga_inventory_rejected_total[5m]) /
+          (rate(saga_inventory_reserved_total[5m]) + rate(saga_inventory_rejected_total[5m]) + 0.001) > 0.30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Inventory rejection rate above 30%"
+          description: "High proportion of inventory rejections. Products may be out of stock."
+
+  - name: saga_latency
+    interval: 30s
+    rules:
+      - alert: SlowOrderCreation
+        expr: |
+          histogram_quantile(0.95,
+            rate(saga_order_create_seconds_bucket[5m])
+          ) > 2.0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Order creation p95 latency above 2 seconds"
+          description: "95th percentile latency for order creation has exceeded 2 seconds."
+
+      - alert: SlowPaymentProcessing
+        expr: |
+          histogram_quantile(0.95,
+            rate(saga_payment_process_seconds_bucket[5m])
+          ) > 3.0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Payment processing p95 latency above 3 seconds"
+          description: "95th percentile latency for payment processing has exceeded 3 seconds."
+
+  - name: saga_infrastructure
+    interval: 60s
+    rules:
+      - alert: KafkaConsumerLag
+        expr: |
+          sum by (topic, partition) (
+            kafka_consumer_fetch_manager_records_lag{topic=~"saga-.*"}
+          ) > 1000
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Kafka consumer lag above 1000 on SAGA topics"
+          description: "Consumer group is falling behind on topic {{ $labels.topic }}, partition {{ $labels.partition }}. Lag: {{ $value }}."
+
+      - alert: HighJvmHeapUsage
+        expr: |
+          jvm_memory_used_bytes{area="heap"} /
+          jvm_memory_max_bytes{area="heap"} > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "JVM heap usage above 85% on {{ $labels.job }}"
+          description: "Service {{ $labels.job }} is using more than 85% of its configured heap memory."
+
+      - alert: ServiceDown
+        expr: up{job=~"order-service|payment-service|inventory-service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SAGA service {{ $labels.job }} is down"
+          description: "Prometheus cannot scrape {{ $labels.job }}. The service may have crashed or become unreachable."
+
+      - alert: HighErrorRate
+        expr: |
+          sum by (job) (
+            rate(http_server_requests_seconds_count{status=~"5.."}[5m])
+          ) /
+          sum by (job) (
+            rate(http_server_requests_seconds_count[5m])
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "HTTP 5xx error rate above 5% on {{ $labels.job }}"
+          description: "More than 5% of HTTP requests are returning 5xx errors on {{ $labels.job }}."

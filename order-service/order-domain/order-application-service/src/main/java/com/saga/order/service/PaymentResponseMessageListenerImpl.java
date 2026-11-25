@@ -9,6 +9,7 @@ import com.saga.order.service.ports.input.message.listener.payment.PaymentRespon
 import com.saga.order.service.ports.output.message.publisher.OrderCancelledMessagePublisher;
 import com.saga.order.service.ports.output.message.publisher.OrderCompletedMessagePublisher;
 import com.saga.order.service.ports.output.repository.OrderRepository;
+import io.micrometer.observation.annotation.Observed;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -20,6 +21,7 @@ import java.util.Optional;
 
 @Service
 @RequiredArgsConstructor
+@Observed(name = "saga.order.payment-response", contextualName = "order-payment-response")
 public class PaymentResponseMessageListenerImpl implements PaymentResponseMessageListener {
 
     private static final Logger log = LoggerFactory.getLogger(PaymentResponseMessageListenerImpl.class);
@@ -28,6 +30,7 @@ public class PaymentResponseMessageListenerImpl implements PaymentResponseMessag
     private final OrderRepository orderRepository;
     private final OrderCancelledMessagePublisher orderCancelledMessagePublisher;
     private final OrderCompletedMessagePublisher orderCompletedMessagePublisher;
+    private final SagaOrderMetrics sagaOrderMetrics;
 
     @Override
     @Transactional
@@ -61,10 +64,12 @@ public class PaymentResponseMessageListenerImpl implements PaymentResponseMessag
         orderDomainService.completeOrderSaga(order).ifPresent(event -> {
             orderRepository.save(order);
             orderCompletedMessagePublisher.publish(event);
+            sagaOrderMetrics.sagaCompleted();
         });
         orderDomainService.cancelOrderSaga(order).ifPresent(event -> {
             orderRepository.save(order);
             orderCancelledMessagePublisher.publish(event);
+            sagaOrderMetrics.sagaCancelled();
         });
     }
 }

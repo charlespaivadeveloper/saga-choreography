@@ -14,6 +14,7 @@ import com.saga.order.service.ports.input.service.OrderApplicationService;
 import com.saga.order.service.ports.output.message.publisher.OrderCreatedMessagePublisher;
 import com.saga.order.service.ports.output.repository.OrderRepository;
 import com.saga.order.service.ports.output.repository.ProductCatalogRepository;
+import io.micrometer.observation.annotation.Observed;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
@@ -27,6 +28,7 @@ import java.util.stream.Collectors;
 @Service
 @Validated
 @RequiredArgsConstructor
+@Observed(name = "saga.order.create", contextualName = "order-create")
 public class OrderCreateCommandHandler implements OrderApplicationService {
 
     private static final Logger log = LoggerFactory.getLogger(OrderCreateCommandHandler.class);
@@ -36,6 +38,7 @@ public class OrderCreateCommandHandler implements OrderApplicationService {
     private final ProductCatalogRepository productCatalogRepository;
     private final OrderDataMapper orderDataMapper;
     private final OrderCreatedMessagePublisher orderCreatedMessagePublisher;
+    private final SagaOrderMetrics sagaOrderMetrics;
 
     @Override
     @Transactional
@@ -49,6 +52,7 @@ public class OrderCreateCommandHandler implements OrderApplicationService {
         OrderCreatedEvent orderCreatedEvent = orderDomainService.validateAndInitiateOrder(order);
         Order savedOrder = orderRepository.save(order);
         orderCreatedMessagePublisher.publish(orderCreatedEvent);
+        sagaOrderMetrics.orderCreated();
 
         log.info("Order created with id: {}", savedOrder.getId().getValue());
         return orderDataMapper.orderToCreateOrderResponse(savedOrder, "Order created successfully");

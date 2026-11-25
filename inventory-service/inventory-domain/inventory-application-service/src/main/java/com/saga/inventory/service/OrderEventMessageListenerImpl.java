@@ -14,6 +14,7 @@ import com.saga.inventory.service.ports.output.message.publisher.InventoryReject
 import com.saga.inventory.service.ports.output.message.publisher.InventoryReservedMessagePublisher;
 import com.saga.inventory.service.ports.output.repository.OrderInventoryConsumptionRepository;
 import com.saga.inventory.service.ports.output.repository.OrderInventoryRepository;
+import io.micrometer.observation.annotation.Observed;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -25,6 +26,7 @@ import java.util.List;
 
 @Service
 @RequiredArgsConstructor
+@Observed(name = "saga.inventory.process", contextualName = "inventory-process")
 public class OrderEventMessageListenerImpl implements OrderEventMessageListener {
 
     private static final Logger log = LoggerFactory.getLogger(OrderEventMessageListenerImpl.class);
@@ -34,6 +36,7 @@ public class OrderEventMessageListenerImpl implements OrderEventMessageListener 
     private final OrderInventoryConsumptionRepository consumptionRepository;
     private final InventoryReservedMessagePublisher inventoryReservedPublisher;
     private final InventoryRejectedMessagePublisher inventoryRejectedPublisher;
+    private final SagaInventoryMetrics sagaInventoryMetrics;
 
     @Override
     @Transactional
@@ -57,17 +60,20 @@ public class OrderEventMessageListenerImpl implements OrderEventMessageListener 
                 orderInventoryRepository.save(orderInventory);
                 consumptionRepository.save(consumption);
                 inventoryReservedPublisher.publish(event);
+                sagaInventoryMetrics.inventoryReserved();
                 log.info("Inventory reserved for orderId: {}", message.getOrderId());
             } else {
                 InventoryRejectedEvent rejectedEvent = new InventoryRejectedEvent(
                     orderId, productId, List.of("Out of stock"), Instant.now());
                 inventoryRejectedPublisher.publish(rejectedEvent);
+                sagaInventoryMetrics.inventoryRejected();
                 log.warn("Inventory rejected (out of stock) for orderId: {}", message.getOrderId());
             }
         } catch (InventoryDomainException ex) {
             InventoryRejectedEvent rejectedEvent = new InventoryRejectedEvent(
                 orderId, productId, List.of(ex.getMessage()), Instant.now());
             inventoryRejectedPublisher.publish(rejectedEvent);
+            sagaInventoryMetrics.inventoryRejected();
         }
     }
 
@@ -84,6 +90,7 @@ public class OrderEventMessageListenerImpl implements OrderEventMessageListener 
             inventoryDomainService.rejectInventory(orderId, productId, orderInventory, consumption);
             orderInventoryRepository.save(orderInventory);
             consumptionRepository.delete(consumption);
+            sagaInventoryMetrics.inventoryRestored();
             log.info("Inventory restored for orderId: {}", message.getOrderId());
         });
     }

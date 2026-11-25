@@ -17,6 +17,7 @@
     <modules>
         <module>inventory-domain</module>
         <module>inventory-infrastructure</module>
+        <module>inventory-application</module>
         <module>inventory-container</module>
     </modules>
 </project>

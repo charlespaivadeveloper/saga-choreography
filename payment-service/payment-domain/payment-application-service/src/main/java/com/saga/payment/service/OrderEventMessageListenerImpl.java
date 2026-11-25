@@ -15,6 +15,7 @@ import com.saga.payment.service.ports.output.message.publisher.PaymentRejectedMe
 import com.saga.payment.service.ports.output.message.publisher.PaymentReservedMessagePublisher;
 import com.saga.payment.service.ports.output.repository.UserBalanceRepository;
 import com.saga.payment.service.ports.output.repository.UserTransactionRepository;
+import io.micrometer.observation.annotation.Observed;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,6 +27,7 @@ import java.util.List;
 
 @Service
 @RequiredArgsConstructor
+@Observed(name = "saga.payment.process", contextualName = "payment-process")
 public class OrderEventMessageListenerImpl implements OrderEventMessageListener {
 
     private static final Logger log = LoggerFactory.getLogger(OrderEventMessageListenerImpl.class);
@@ -35,6 +37,7 @@ public class OrderEventMessageListenerImpl implements OrderEventMessageListener 
     private final UserTransactionRepository userTransactionRepository;
     private final PaymentReservedMessagePublisher paymentReservedPublisher;
     private final PaymentRejectedMessagePublisher paymentRejectedPublisher;
+    private final SagaPaymentMetrics sagaPaymentMetrics;
 
     @Override
     @Transactional
@@ -57,17 +60,20 @@ public class OrderEventMessageListenerImpl implements OrderEventMessageListener 
                 userBalanceRepository.save(userBalance);
                 userTransactionRepository.save(transaction);
                 paymentReservedPublisher.publish(event);
+                sagaPaymentMetrics.paymentReserved();
                 log.info("Payment reserved for orderId: {}", message.getOrderId());
             } else {
                 PaymentRejectedEvent rejectedEvent = new PaymentRejectedEvent(
                     orderId, userId, List.of("Insufficient balance"), Instant.now());
                 paymentRejectedPublisher.publish(rejectedEvent);
+                sagaPaymentMetrics.paymentRejected();
                 log.warn("Payment rejected (insufficient balance) for orderId: {}", message.getOrderId());
             }
         } catch (PaymentDomainException ex) {
             PaymentRejectedEvent rejectedEvent = new PaymentRejectedEvent(
                 orderId, userId, List.of(ex.getMessage()), Instant.now());
             paymentRejectedPublisher.publish(rejectedEvent);
+            sagaPaymentMetrics.paymentRejected();
         }
     }
 
@@ -86,6 +92,7 @@ public class OrderEventMessageListenerImpl implements OrderEventMessageListener 
             userBalanceRepository.save(userBalance);
             userTransactionRepository.delete(transaction);
             paymentRejectedPublisher.publish(event);
+            sagaPaymentMetrics.paymentRefunded();
             log.info("Payment refunded for orderId: {}", message.getOrderId());
         });
     }
