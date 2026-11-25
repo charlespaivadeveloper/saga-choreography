@@ -58,6 +58,15 @@ management:
     tracing:
       endpoint: http://localhost:9411/api/v2/spans
 
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    display-request-duration: true
+    tags-sorter: alpha
+    operations-sorter: alpha
+
 logging:
   level:
     com.saga: INFO

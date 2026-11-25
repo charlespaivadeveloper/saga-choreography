@@ -1,0 +1,299 @@
+openapi: 3.1.0
+
+info:
+  title: Payment Service — Observability API
+  description: |
+    Endpoints de observabilidade do **Payment Service** no sistema **SAGA Choreography v2**.
+
+    Este serviço **não expõe endpoints de negócio via HTTP**. Toda a comunicação
+    de negócio ocorre exclusivamente via eventos Kafka.
+
+    ## Contrato Kafka (evento de entrada)
+
+    **Tópico consumido:** `saga-order-events`
+    **Consumer group:** `payment-service-group`
+
+    ```json
+    {
+      "orderId": "550e8400-e29b-41d4-a716-446655440000",
+      "userId": 1,
+      "productId": 1,
+      "price": 100.00,
+      "orderStatus": "ORDER_CREATED | ORDER_CANCELLED",
+      "sagaId": "...",
+      "createdAt": "2024-11-25T10:30:00Z"
+    }
+    ```
+
+    ## Contrato Kafka (evento de saída)
+
+    **Tópico publicado:** `saga-payment-events`
+    **Key:** `orderId` (String)
+
+    ```json
+    {
+      "paymentId": "550e8400-e29b-41d4-a716-446655440001",
+      "orderId": "550e8400-e29b-41d4-a716-446655440000",
+      "userId": 1,
+      "amount": 100.00,
+      "paymentStatus": "RESERVED | REJECTED",
+      "failureMessages": [],
+      "createdAt": "2024-11-25T10:30:00Z"
+    }
+    ```
+
+    ## Regras de negócio
+
+    - `ORDER_CREATED`: reserva o valor do pedido do saldo do usuário
+      - Se `user_balance.balance >= price` → persiste `user_transaction`, decrementa saldo → publica `RESERVED`
+      - Se `user_balance.balance < price` → publica `REJECTED` com mensagem de erro
+    - `ORDER_CANCELLED`: devolve o valor ao saldo do usuário
+      - Se existe `user_transaction` para o `orderId` → remove transação, incrementa saldo
+      - Idempotente: se não existe transação, nenhum evento é publicado
+
+    ## Fluxo na SAGA
+
+    ```
+    saga-order-events (ORDER_CREATED)
+      ↓
+      PaymentDomainService.reserve()
+        ↓ saldo ok   → UserBalance.deduct() → user_transaction INSERT → PaymentReservedEvent
+        ↓ saldo baixo                        →                           PaymentRejectedEvent
+      ↓
+    saga-payment-events (RESERVED | REJECTED)
+    ```
+
+  version: 1.0.0
+  contact:
+    name: SAGA Choreography Team
+    email: paiva.charles@gmail.com
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8081
+    description: Desenvolvimento local
+  - url: http://payment-service:8081
+    description: Docker Compose
+
+tags:
+  - name: observability
+    description: Saúde, métricas e rastreamento do serviço
+
+paths:
+
+  /actuator/health:
+    get:
+      tags: [observability]
+      summary: Health check do serviço
+      description: |
+        Retorna o estado de saúde do payment-service, incluindo conectividade
+        com PostgreSQL e Kafka.
+      operationId: paymentHealthCheck
+      responses:
+        '200':
+          description: Serviço saudável
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: "UP"
+                components:
+                  db:
+                    status: "UP"
+                    details:
+                      database: "PostgreSQL"
+                  kafka:
+                    status: "UP"
+        '503':
+          description: Serviço degradado (banco ou Kafka inacessível)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: "DOWN"
+                components:
+                  db:
+                    status: "DOWN"
+
+  /actuator/prometheus:
+    get:
+      tags: [observability]
+      summary: Métricas no formato Prometheus
+      description: |
+        Expõe métricas no formato Prometheus para scraping.
+
+        **Métricas relevantes para a SAGA:**
+        - `kafka_consumer_records_consumed_total` — eventos Kafka consumidos
+        - `kafka_producer_record_send_total` — eventos Kafka publicados
+        - `jvm_memory_used_bytes` — uso de memória JVM
+        - `spring_data_repository_invocations_seconds` — latência das queries JPA
+      operationId: paymentPrometheusMetrics
+      responses:
+        '200':
+          description: Métricas no formato text/plain Prometheus
+          content:
+            text/plain:
+              example: |
+                # HELP kafka_consumer_records_consumed_total
+                kafka_consumer_records_consumed_total{...} 42.0
+
+  /actuator/info:
+    get:
+      tags: [observability]
+      summary: Informações do build
+      operationId: paymentInfo
+      responses:
+        '200':
+          description: Metadados do serviço
+          content:
+            application/json:
+              example:
+                app:
+                  name: "payment-service"
+                  version: "1.0.0"
+
+  /v3/api-docs:
+    get:
+      tags: [observability]
+      summary: Especificação OpenAPI em JSON (gerada em runtime)
+      operationId: paymentApiDocs
+      responses:
+        '200':
+          description: OpenAPI 3.0 JSON spec
+
+components:
+  schemas:
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [UP, DOWN, OUT_OF_SERVICE, UNKNOWN]
+          example: UP
+        components:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/HealthComponent'
+
+    HealthComponent:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [UP, DOWN, OUT_OF_SERVICE, UNKNOWN]
+        details:
+          type: object
+
+    OrderEventMessage:
+      type: object
+      description: Mensagem consumida do tópico `saga-order-events`
+      required: [orderId, userId, productId, price, orderStatus, createdAt]
+      properties:
+        orderId:
+          type: string
+          format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        userId:
+          type: integer
+          format: int64
+          example: 1
+        productId:
+          type: integer
+          format: int64
+          example: 1
+        price:
+          type: number
+          format: decimal
+          example: 100.00
+        orderStatus:
+          type: string
+          enum: [ORDER_CREATED, ORDER_CANCELLED]
+          example: ORDER_CREATED
+        sagaId:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+
+    PaymentEventMessage:
+      type: object
+      description: Mensagem publicada no tópico `saga-payment-events`
+      required: [orderId, userId, amount, paymentStatus, createdAt]
+      properties:
+        paymentId:
+          type: string
+          format: uuid
+          description: ID da transação de pagamento (null se rejeitado antes de persistir)
+          nullable: true
+        orderId:
+          type: string
+          format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        userId:
+          type: integer
+          format: int64
+          example: 1
+        amount:
+          type: number
+          format: decimal
+          example: 100.00
+        paymentStatus:
+          type: string
+          enum: [RESERVED, REJECTED]
+          description: |
+            - `RESERVED`: saldo reservado com sucesso
+            - `REJECTED`: saldo insuficiente
+          example: RESERVED
+        failureMessages:
+          type: array
+          items:
+            type: string
+          description: Motivos de rejeição (vazio se RESERVED)
+          example: []
+        createdAt:
+          type: string
+          format: date-time
+
+    UserBalance:
+      type: object
+      description: Saldo do usuário no banco de dados do payment-service
+      properties:
+        userId:
+          type: integer
+          format: int64
+          example: 1
+        balance:
+          type: number
+          format: decimal
+          description: Saldo atual disponível
+          example: 1000.00
+        version:
+          type: integer
+          format: int64
+          description: Versão para optimistic locking
+
+    UserTransaction:
+      type: object
+      description: Registro de cada reserva de pagamento (uma por pedido)
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: integer
+          format: int64
+        orderId:
+          type: string
+          format: uuid
+          description: Único — garante idempotência (UNIQUE constraint no banco)
+        amount:
+          type: number
+          format: decimal
+        createdAt:
+          type: string
+          format: date-time

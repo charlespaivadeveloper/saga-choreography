@@ -1,0 +1,406 @@
+openapi: 3.1.0
+
+info:
+  title: Order Service API
+  description: |
+    API REST do **Order Service** no sistema **SAGA Choreography v2**.
+
+    Este serviço é o único ponto de entrada HTTP do sistema. Os serviços
+    `payment-service` e `inventory-service` comunicam-se exclusivamente via
+    eventos Kafka e **não expõem endpoints REST**.
+
+    ## Fluxo SAGA Choreography
+
+    ```
+    POST /api/v1/orders
+      → ORDER_CREATED publicado em saga-order-events
+        ↓ (paralelo)
+        payment-service  → RESERVED | REJECTED → saga-payment-events
+        inventory-service → RESERVED | REJECTED → saga-inventory-events
+        ↓
+        order-service listener
+          → ambos RESERVED  → ORDER_COMPLETED
+          → qualquer REJECTED → ORDER_CANCELLED
+    ```
+
+    ## Dados iniciais (seed)
+
+    | Usuário | Saldo |
+    |---------|-------|
+    | 1 | R$ 1.000,00 |
+    | 2 | R$ 1.000,00 |
+    | 3 | R$ 1.000,00 |
+
+    | Produto | Preço | Estoque |
+    |---------|-------|---------|
+    | 1 | R$ 100,00 | 5 unid. |
+    | 2 | R$ 200,00 | 5 unid. |
+    | 3 | R$ 300,00 | 5 unid. |
+
+  version: 1.0.0
+  contact:
+    name: SAGA Choreography Team
+    email: paiva.charles@gmail.com
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Desenvolvimento local
+  - url: http://order-service:8080
+    description: Docker Compose
+
+tags:
+  - name: orders
+    description: Gerenciamento de pedidos
+  - name: observability
+    description: Saúde e métricas do serviço
+
+paths:
+
+  /api/v1/orders:
+
+    post:
+      tags: [orders]
+      summary: Criar um novo pedido
+      description: |
+        Inicia o fluxo SAGA criando um pedido. O pedido é persistido com status
+        `ORDER_CREATED` e um evento é publicado no tópico `saga-order-events`.
+
+        O status final (`ORDER_COMPLETED` ou `ORDER_CANCELLED`) é definido de forma
+        **assíncrona** após o processamento de pagamento e estoque.
+
+        **Erros de negócio que causam 400:**
+        - `userId` não cadastrado no payment-service
+        - `productId` não encontrado no catálogo de produtos
+        - Campos ausentes ou com valor inválido (≤ 0)
+      operationId: createOrder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrderCommand'
+            examples:
+              happy_path:
+                summary: Pedido válido — SAGA deve completar com sucesso
+                value:
+                  userId: 1
+                  productId: 1
+              produto_caro:
+                summary: Produto de alto valor (R$ 300,00)
+                value:
+                  userId: 2
+                  productId: 3
+              produto_inexistente:
+                summary: Produto fora do catálogo — resulta em 400
+                value:
+                  userId: 1
+                  productId: 999
+              usuario_invalido:
+                summary: userId ≤ 0 — resulta em erro de validação
+                value:
+                  userId: 0
+                  productId: 1
+              body_vazio:
+                summary: Corpo vazio — resulta em erro de validação
+                value: {}
+      responses:
+        '201':
+          description: |
+            Pedido criado. A SAGA foi iniciada. O status ainda é `ORDER_CREATED`
+            e mudará para `ORDER_COMPLETED` ou `ORDER_CANCELLED` de forma assíncrona.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateOrderResponse'
+              example:
+                orderId: "550e8400-e29b-41d4-a716-446655440000"
+                orderStatus: "ORDER_CREATED"
+                message: "Order created successfully"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    get:
+      tags: [orders]
+      summary: Listar todos os pedidos
+      description: |
+        Retorna todos os pedidos registrados no banco de dados local do order-service,
+        incluindo o status final da SAGA (`ORDER_COMPLETED`, `ORDER_CANCELLED`) e
+        os status de pagamento e inventário quando disponíveis.
+      operationId: getAllOrders
+      responses:
+        '200':
+          description: Lista de pedidos (pode ser vazia)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetAllOrdersResponse'
+              examples:
+                lista_vazia:
+                  summary: Nenhum pedido ainda
+                  value:
+                    orders: []
+                lista_com_pedidos:
+                  summary: Pedidos em diferentes estados da SAGA
+                  value:
+                    orders:
+                      - orderId: "550e8400-e29b-41d4-a716-446655440001"
+                        userId: 1
+                        productId: 1
+                        price: 100.00
+                        orderStatus: "ORDER_COMPLETED"
+                        paymentStatus: "RESERVED"
+                        inventoryStatus: "RESERVED"
+                        failureMessages: []
+                      - orderId: "550e8400-e29b-41d4-a716-446655440002"
+                        userId: 1
+                        productId: 3
+                        price: 300.00
+                        orderStatus: "ORDER_CANCELLED"
+                        paymentStatus: "REJECTED"
+                        inventoryStatus: null
+                        failureMessages: ["Insufficient balance for user: 1"]
+                      - orderId: "550e8400-e29b-41d4-a716-446655440003"
+                        userId: 2
+                        productId: 1
+                        price: 100.00
+                        orderStatus: "ORDER_CREATED"
+                        paymentStatus: null
+                        inventoryStatus: null
+                        failureMessages: []
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /actuator/health:
+    get:
+      tags: [observability]
+      summary: Health check do serviço
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Serviço saudável
+          content:
+            application/json:
+              example:
+                status: "UP"
+                components:
+                  db:
+                    status: "UP"
+                  kafka:
+                    status: "UP"
+        '503':
+          description: Serviço degradado
+
+  /actuator/metrics/http.server.requests:
+    get:
+      tags: [observability]
+      summary: Métricas HTTP do serviço
+      operationId: httpMetrics
+      responses:
+        '200':
+          description: Métricas Micrometer
+
+components:
+
+  schemas:
+
+    CreateOrderCommand:
+      type: object
+      required:
+        - userId
+        - productId
+      properties:
+        userId:
+          type: integer
+          format: int64
+          description: |
+            ID do usuário. Deve ter saldo cadastrado no `payment-service`.
+            Usuários disponíveis no seed: 1, 2, 3 (cada um com R$ 1.000,00).
+          minimum: 1
+          example: 1
+        productId:
+          type: integer
+          format: int64
+          description: |
+            ID do produto. Deve existir no catálogo interno do `order-service`
+            e ter estoque no `inventory-service`.
+            Produtos disponíveis no seed: 1 (R$ 100), 2 (R$ 200), 3 (R$ 300).
+          minimum: 1
+          example: 1
+
+    CreateOrderResponse:
+      type: object
+      description: Resposta imediata após criação do pedido. SAGA ainda em andamento.
+      properties:
+        orderId:
+          type: string
+          format: uuid
+          description: UUID gerado para o pedido. Use para acompanhar o status via GET /api/v1/orders.
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        orderStatus:
+          $ref: '#/components/schemas/OrderStatus'
+        message:
+          type: string
+          description: Mensagem descritiva do resultado
+          example: "Order created successfully"
+
+    OrderDto:
+      type: object
+      description: Representação completa de um pedido com estado atual da SAGA.
+      properties:
+        orderId:
+          type: string
+          format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        userId:
+          type: integer
+          format: int64
+          example: 1
+        productId:
+          type: integer
+          format: int64
+          example: 1
+        price:
+          type: number
+          format: decimal
+          description: Preço do produto no momento da criação do pedido
+          example: 100.00
+        orderStatus:
+          $ref: '#/components/schemas/OrderStatus'
+        paymentStatus:
+          $ref: '#/components/schemas/PaymentStatus'
+        inventoryStatus:
+          $ref: '#/components/schemas/InventoryStatus'
+        failureMessages:
+          type: array
+          description: Mensagens de falha da SAGA (vazia em caso de sucesso)
+          items:
+            type: string
+          example: []
+
+    GetAllOrdersResponse:
+      type: object
+      properties:
+        orders:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderDto'
+
+    OrderStatus:
+      type: string
+      enum:
+        - ORDER_CREATED
+        - ORDER_COMPLETED
+        - ORDER_CANCELLED
+      description: |
+        Estado do ciclo de vida do pedido:
+        - `ORDER_CREATED`: Pedido criado, SAGA em andamento (estado transitório)
+        - `ORDER_COMPLETED`: Pagamento e estoque reservados com sucesso (estado final de sucesso)
+        - `ORDER_CANCELLED`: Pagamento ou estoque rejeitado — transações compensadas (estado final de falha)
+      example: ORDER_CREATED
+
+    PaymentStatus:
+      type: string
+      nullable: true
+      enum:
+        - RESERVED
+        - REJECTED
+      description: |
+        Estado do processamento de pagamento:
+        - `null`: aguardando resposta do payment-service
+        - `RESERVED`: saldo reservado com sucesso
+        - `REJECTED`: saldo insuficiente
+      example: RESERVED
+
+    InventoryStatus:
+      type: string
+      nullable: true
+      enum:
+        - RESERVED
+        - REJECTED
+      description: |
+        Estado do processamento de estoque:
+        - `null`: aguardando resposta do inventory-service
+        - `RESERVED`: estoque reservado com sucesso
+        - `REJECTED`: estoque insuficiente
+      example: RESERVED
+
+    ErrorResponse:
+      type: object
+      description: Corpo de resposta para erros HTTP (4xx e 5xx)
+      properties:
+        code:
+          type: string
+          enum:
+            - VALIDATION_ERROR
+            - ORDER_DOMAIN_ERROR
+            - ORDER_NOT_FOUND
+            - INTERNAL_ERROR
+          description: |
+            Código de erro:
+            - `VALIDATION_ERROR`: campos ausentes ou inválidos na requisição
+            - `ORDER_DOMAIN_ERROR`: violação de regra de negócio (ex: produto não encontrado)
+            - `ORDER_NOT_FOUND`: pedido não encontrado pelo ID
+            - `INTERNAL_ERROR`: erro inesperado no servidor
+          example: "VALIDATION_ERROR"
+        message:
+          type: string
+          description: Descrição legível do erro
+          example: "userId: userId is required, productId: productId is required"
+        timestamp:
+          type: string
+          format: date-time
+          example: "2024-11-25T10:30:00Z"
+
+  responses:
+
+    BadRequest:
+      description: Requisição inválida — validação ou regra de negócio violada
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            validation_error:
+              summary: Campo obrigatório ausente
+              value:
+                code: "VALIDATION_ERROR"
+                message: "userId: userId is required"
+                timestamp: "2024-11-25T10:30:00Z"
+            user_id_invalido:
+              summary: userId deve ser positivo
+              value:
+                code: "VALIDATION_ERROR"
+                message: "userId: userId must be positive"
+                timestamp: "2024-11-25T10:30:00Z"
+            produto_nao_encontrado:
+              summary: Produto não existe no catálogo
+              value:
+                code: "ORDER_DOMAIN_ERROR"
+                message: "Product not found in catalog: 999"
+                timestamp: "2024-11-25T10:30:00Z"
+
+    NotFound:
+      description: Recurso não encontrado
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: "ORDER_NOT_FOUND"
+            message: "Order not found"
+            timestamp: "2024-11-25T10:30:00Z"
+
+    InternalServerError:
+      description: Erro interno inesperado
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: "INTERNAL_ERROR"
+            message: "An unexpected error occurred"
+            timestamp: "2024-11-25T10:30:00Z"

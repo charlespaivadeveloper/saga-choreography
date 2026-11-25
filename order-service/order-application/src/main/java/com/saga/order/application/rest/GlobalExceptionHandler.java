@@ -2,6 +2,7 @@ package com.saga.order.application.rest;
 
 import com.saga.order.domain.exception.OrderDomainException;
 import com.saga.order.domain.exception.OrderNotFoundException;
+import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Builder;
 import lombok.Getter;
 import org.slf4j.Logger;
@@ -66,11 +67,28 @@ public class GlobalExceptionHandler {
                 .build());
     }
 
+    @Schema(description = "Corpo de resposta para erros HTTP (4xx e 5xx)")
     @Getter
     @Builder
     public static class ErrorResponse {
+
+        @Schema(
+            description = "Código de erro identificando o tipo de falha",
+            allowableValues = {"VALIDATION_ERROR", "ORDER_DOMAIN_ERROR", "ORDER_NOT_FOUND", "INTERNAL_ERROR"},
+            example = "VALIDATION_ERROR"
+        )
         private String code;
+
+        @Schema(
+            description = "Descrição legível do erro",
+            example = "userId: userId is required"
+        )
         private String message;
+
+        @Schema(
+            description = "Momento em que o erro ocorreu (UTC)",
+            example = "2024-11-25T10:30:00Z"
+        )
         private Instant timestamp;
     }
 }

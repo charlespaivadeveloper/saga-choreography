@@ -26,11 +26,16 @@ data:
         static_configs:
           - targets: ['inventory-service:8082']
 
+      - job_name: 'kong'
+        metrics_path: '/metrics'
+        static_configs:
+          - targets: ['kong-admin.kong.svc.cluster.local:8001']
+
       - job_name: 'kubernetes-pods'
         kubernetes_sd_configs:
           - role: pod
             namespaces:
-              names: ['saga']
+              names: ['saga', 'kong']
         relabel_configs:
           - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
             action: keep

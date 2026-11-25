@@ -1,0 +1,288 @@
+openapi: 3.1.0
+
+info:
+  title: Inventory Service — Observability API
+  description: |
+    Endpoints de observabilidade do **Inventory Service** no sistema **SAGA Choreography v2**.
+
+    Este serviço **não expõe endpoints de negócio via HTTP**. Toda a comunicação
+    de negócio ocorre exclusivamente via eventos Kafka.
+
+    ## Contrato Kafka (evento de entrada)
+
+    **Tópico consumido:** `saga-order-events`
+    **Consumer group:** `inventory-service-group`
+
+    ```json
+    {
+      "orderId": "550e8400-e29b-41d4-a716-446655440000",
+      "userId": 1,
+      "productId": 1,
+      "price": 100.00,
+      "orderStatus": "ORDER_CREATED | ORDER_CANCELLED",
+      "sagaId": "...",
+      "createdAt": "2024-11-25T10:30:00Z"
+    }
+    ```
+
+    ## Contrato Kafka (evento de saída)
+
+    **Tópico publicado:** `saga-inventory-events`
+    **Key:** `orderId` (String)
+
+    ```json
+    {
+      "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
+      "orderId": "550e8400-e29b-41d4-a716-446655440000",
+      "productId": 1,
+      "inventoryStatus": "RESERVED | REJECTED",
+      "failureMessages": [],
+      "createdAt": "2024-11-25T10:30:00Z"
+    }
+    ```
+
+    ## Regras de negócio
+
+    - `ORDER_CREATED`: reserva uma unidade do produto
+      - Se `order_inventory.available_inventory > 0` → decrementa estoque, insere `order_inventory_consumption` → publica `RESERVED`
+      - Se `order_inventory.available_inventory == 0` → publica `REJECTED` com mensagem de erro
+    - `ORDER_CANCELLED`: devolve a unidade ao estoque
+      - Se existe `order_inventory_consumption` para o `orderId` → remove consumo, incrementa `available_inventory`
+      - Idempotente: se não existe consumo, nenhum evento é publicado
+
+    ## Fluxo na SAGA
+
+    ```
+    saga-order-events (ORDER_CREATED)
+      ↓
+      InventoryDomainService.reserve()
+        ↓ estoque ok   → OrderInventory.decrement() → order_inventory_consumption INSERT → InventoryReservedEvent
+        ↓ estoque zero →                                                                    InventoryRejectedEvent
+      ↓
+    saga-inventory-events (RESERVED | REJECTED)
+    ```
+
+  version: 1.0.0
+  contact:
+    name: SAGA Choreography Team
+    email: paiva.charles@gmail.com
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8082
+    description: Desenvolvimento local
+  - url: http://inventory-service:8082
+    description: Docker Compose
+
+tags:
+  - name: observability
+    description: Saúde, métricas e rastreamento do serviço
+
+paths:
+
+  /actuator/health:
+    get:
+      tags: [observability]
+      summary: Health check do serviço
+      description: |
+        Retorna o estado de saúde do inventory-service, incluindo conectividade
+        com PostgreSQL e Kafka.
+      operationId: inventoryHealthCheck
+      responses:
+        '200':
+          description: Serviço saudável
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: "UP"
+                components:
+                  db:
+                    status: "UP"
+                    details:
+                      database: "PostgreSQL"
+                  kafka:
+                    status: "UP"
+        '503':
+          description: Serviço degradado (banco ou Kafka inacessível)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /actuator/prometheus:
+    get:
+      tags: [observability]
+      summary: Métricas no formato Prometheus
+      description: |
+        Expõe métricas no formato Prometheus para scraping.
+
+        **Métricas relevantes para a SAGA:**
+        - `kafka_consumer_records_consumed_total` — eventos Kafka consumidos
+        - `kafka_producer_record_send_total` — eventos Kafka publicados
+        - `jvm_memory_used_bytes` — uso de memória JVM
+        - `spring_data_repository_invocations_seconds` — latência das queries JPA
+      operationId: inventoryPrometheusMetrics
+      responses:
+        '200':
+          description: Métricas no formato text/plain Prometheus
+          content:
+            text/plain:
+              example: |
+                # HELP kafka_consumer_records_consumed_total
+                kafka_consumer_records_consumed_total{...} 42.0
+
+  /actuator/info:
+    get:
+      tags: [observability]
+      summary: Informações do build
+      operationId: inventoryInfo
+      responses:
+        '200':
+          description: Metadados do serviço
+          content:
+            application/json:
+              example:
+                app:
+                  name: "inventory-service"
+                  version: "1.0.0"
+
+  /v3/api-docs:
+    get:
+      tags: [observability]
+      summary: Especificação OpenAPI em JSON (gerada em runtime)
+      operationId: inventoryApiDocs
+      responses:
+        '200':
+          description: OpenAPI 3.0 JSON spec
+
+components:
+  schemas:
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [UP, DOWN, OUT_OF_SERVICE, UNKNOWN]
+          example: UP
+        components:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/HealthComponent'
+
+    HealthComponent:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [UP, DOWN, OUT_OF_SERVICE, UNKNOWN]
+        details:
+          type: object
+
+    OrderEventMessage:
+      type: object
+      description: Mensagem consumida do tópico `saga-order-events`
+      required: [orderId, userId, productId, price, orderStatus, createdAt]
+      properties:
+        orderId:
+          type: string
+          format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        userId:
+          type: integer
+          format: int64
+          example: 1
+        productId:
+          type: integer
+          format: int64
+          example: 1
+        price:
+          type: number
+          format: decimal
+          example: 100.00
+        orderStatus:
+          type: string
+          enum: [ORDER_CREATED, ORDER_CANCELLED]
+          example: ORDER_CREATED
+        sagaId:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+
+    InventoryEventMessage:
+      type: object
+      description: Mensagem publicada no tópico `saga-inventory-events`
+      required: [orderId, productId, inventoryStatus, createdAt]
+      properties:
+        inventoryId:
+          type: string
+          format: uuid
+          description: ID do registro de consumo (null se rejeitado antes de persistir)
+          nullable: true
+        orderId:
+          type: string
+          format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        productId:
+          type: integer
+          format: int64
+          example: 1
+        inventoryStatus:
+          type: string
+          enum: [RESERVED, REJECTED]
+          description: |
+            - `RESERVED`: estoque reservado com sucesso (available_inventory decrementado)
+            - `REJECTED`: estoque insuficiente (available_inventory == 0)
+          example: RESERVED
+        failureMessages:
+          type: array
+          items:
+            type: string
+          description: Motivos de rejeição (vazio se RESERVED)
+          example: []
+        createdAt:
+          type: string
+          format: date-time
+
+    OrderInventory:
+      type: object
+      description: Estoque disponível por produto no banco de dados do inventory-service
+      properties:
+        productId:
+          type: integer
+          format: int64
+          example: 1
+        availableInventory:
+          type: integer
+          description: Quantidade disponível para reserva
+          example: 5
+        version:
+          type: integer
+          format: int64
+          description: Versão para optimistic locking
+
+    OrderInventoryConsumption:
+      type: object
+      description: Registro de cada reserva de estoque (uma por pedido)
+      properties:
+        id:
+          type: string
+          format: uuid
+        productId:
+          type: integer
+          format: int64
+        orderId:
+          type: string
+          format: uuid
+          description: Único — garante idempotência (UNIQUE constraint no banco)
+        quantityConsumed:
+          type: integer
+          default: 1
+        createdAt:
+          type: string
+          format: date-time

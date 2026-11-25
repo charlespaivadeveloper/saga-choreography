@@ -1,0 +1,220 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kong
+  labels:
+    app.kubernetes.io/name: kong
+    app.kubernetes.io/part-of: saga-choreography
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kong-declarative-config
+  namespace: kong
+data:
+  kong.yml: |
+    _format_version: "3.0"
+    _transform: true
+
+    services:
+      - name: order-service
+        url: http://order-service.saga.svc.cluster.local:8080
+        connect_timeout: 5000
+        read_timeout: 60000
+        write_timeout: 60000
+        routes:
+          - name: order-routes
+            paths:
+              - /api/v1/orders
+            strip_path: false
+            methods: [GET, POST]
+            preserve_host: false
+
+      - name: payment-service
+        url: http://payment-service.saga.svc.cluster.local:8081
+        connect_timeout: 5000
+        read_timeout: 60000
+        write_timeout: 60000
+        routes:
+          - name: payment-routes
+            paths:
+              - /api/v1/payments
+            strip_path: false
+            methods: [GET, POST]
+            preserve_host: false
+
+      - name: inventory-service
+        url: http://inventory-service.saga.svc.cluster.local:8082
+        connect_timeout: 5000
+        read_timeout: 60000
+        write_timeout: 60000
+        routes:
+          - name: inventory-routes
+            paths:
+              - /api/v1/inventory
+            strip_path: false
+            methods: [GET, POST, PUT]
+            preserve_host: false
+
+    plugins:
+      - name: rate-limiting
+        config:
+          minute: 60
+          hour: 1000
+          policy: local
+          error_code: 429
+          error_message: "Too many requests"
+
+      - name: correlation-id
+        config:
+          header_name: X-Correlation-ID
+          generator: uuid
+          echo_downstream: true
+
+      - name: request-size-limiting
+        config:
+          allowed_payload_size: 5
+
+      - name: cors
+        config:
+          origins:
+            - "*"
+          methods:
+            - GET
+            - POST
+            - PUT
+            - DELETE
+            - OPTIONS
+          headers:
+            - Accept
+            - Content-Type
+            - X-Correlation-ID
+          exposed_headers:
+            - X-Correlation-ID
+          credentials: false
+          max_age: 3600
+
+      - name: prometheus
+        config:
+          per_consumer: false
+          status_code_metrics: true
+          latency_metrics: true
+          bandwidth_metrics: true
+          upstream_health_metrics: true
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kong
+  namespace: kong
+  labels:
+    app: kong
+    version: "3.6"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kong
+  template:
+    metadata:
+      labels:
+        app: kong
+        version: "3.6"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8001"
+    spec:
+      nodeSelector:
+        ingress-ready: "true"
+      tolerations:
+        - key: node-role.kubernetes.io/master
+          operator: Equal
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/control-plane
+          operator: Equal
+          effect: NoSchedule
+      containers:
+        - name: kong
+          image: kong:3.6
+          env:
+            - name: KONG_DATABASE
+              value: "off"
+            - name: KONG_DECLARATIVE_CONFIG
+              value: /kong/declarative/kong.yml
+            - name: KONG_PROXY_ACCESS_LOG
+              value: /dev/stdout
+            - name: KONG_ADMIN_ACCESS_LOG
+              value: /dev/stdout
+            - name: KONG_PROXY_ERROR_LOG
+              value: /dev/stderr
+            - name: KONG_ADMIN_ERROR_LOG
+              value: /dev/stderr
+            - name: KONG_ADMIN_LISTEN
+              value: "0.0.0.0:8001"
+            - name: KONG_PROXY_LISTEN
+              value: "0.0.0.0:8000, 0.0.0.0:8443 ssl"
+            - name: KONG_STATUS_LISTEN
+              value: "0.0.0.0:8100"
+          ports:
+            - containerPort: 8000
+              hostPort: 80
+              name: proxy
+            - containerPort: 8443
+              hostPort: 443
+              name: proxy-ssl
+            - containerPort: 8001
+              name: admin
+            - containerPort: 8100
+              name: status
+          volumeMounts:
+            - name: kong-config
+              mountPath: /kong/declarative
+          readinessProbe:
+            httpGet:
+              path: /status
+              port: 8100
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /status
+              port: 8100
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+      volumes:
+        - name: kong-config
+          configMap:
+            name: kong-declarative-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kong-admin
+  namespace: kong
+  labels:
+    app: kong
+spec:
+  selector:
+    app: kong
+  type: ClusterIP
+  ports:
+    - port: 8001
+      targetPort: 8001
+      name: admin
+    - port: 8100
+      targetPort: 8100
+      name: status

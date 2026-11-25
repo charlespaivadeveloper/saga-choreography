@@ -95,20 +95,41 @@ deploy_monitoring() {
     log "Monitoring deployed."
 }
 
+deploy_kong() {
+    log "Deploying Kong API Gateway..."
+    kubectl apply -f kong/kong.yaml
+    log "Waiting for Kong to be ready..."
+    kubectl rollout status deployment/kong -n kong --timeout=180s
+    log "Kong ready."
+}
+
 print_endpoints() {
     log "=== Deployment Complete ==="
     echo ""
-    echo "Service endpoints (via NodePort on localhost):"
-    echo "  Order Service    : http://localhost:8080/api/v1/orders"
-    echo "  Payment Service  : http://localhost:8081/actuator/health"
-    echo "  Inventory Service: http://localhost:8082/actuator/health"
-    echo "  Prometheus       : http://localhost:9090"
-    echo "  Grafana          : http://localhost:3000  (admin/admin)"
-    echo "  Kafka UI         : kubectl port-forward svc/kafka-ui 8090:8080 -n ${NAMESPACE}"
+    echo "Kong API Gateway (port 80):"
+    echo "  POST   http://localhost/api/v1/orders"
+    echo "  GET    http://localhost/api/v1/orders/{id}"
+    echo "  POST   http://localhost/api/v1/payments/user"
+    echo "  GET    http://localhost/api/v1/inventory"
     echo ""
-    echo "Useful commands:"
-    echo "  kubectl get pods -n ${NAMESPACE}"
-    echo "  kubectl logs -f deployment/order-service -n ${NAMESPACE}"
+    echo "Direct NodePort (bypass Kong — debug only):"
+    echo "  Order:     http://localhost:8080/api/v1/orders"
+    echo "  Payment:   http://localhost:8081/api/v1/payments"
+    echo "  Inventory: http://localhost:8082/api/v1/inventory"
+    echo ""
+    echo "Monitoring:"
+    echo "  Prometheus: http://localhost:9090"
+    echo "  Grafana:    http://localhost:3000  (admin/admin)"
+    echo ""
+    echo "Kong Admin API (read-only in DB-less mode):"
+    echo "  kubectl port-forward svc/kong-admin 8001:8001 -n kong"
+    echo "  curl http://localhost:8001/routes"
+    echo ""
+    echo "Kafka UI:"
+    echo "  kubectl port-forward svc/kafka-ui 8090:8080 -n ${NAMESPACE}"
+    echo "  http://localhost:8090"
+    echo ""
+    echo "Destroy cluster:"
     echo "  kind delete cluster --name ${CLUSTER_NAME}"
 }
 
@@ -120,6 +141,7 @@ main() {
         load)       load_images ;;
         infra)      deploy_infrastructure ;;
         services)   deploy_services ;;
+        kong)       deploy_kong ;;
         monitoring) deploy_monitoring ;;
         all)
             check_prerequisites
@@ -128,11 +150,12 @@ main() {
             load_images
             deploy_infrastructure
             deploy_services
+            deploy_kong
             deploy_monitoring
             print_endpoints
             ;;
         *)
-            echo "Usage: $0 [cluster|build|load|infra|services|monitoring|all]"
+            echo "Usage: $0 [cluster|build|load|infra|services|kong|monitoring|all]"
             exit 1
             ;;
     esac

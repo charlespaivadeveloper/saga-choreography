@@ -1,0 +1,1345 @@
+{
+  "info": {
+    "_postman_id": "c8a4e2f1-3b5d-4a9e-8c7f-1d2e3f4a5b6c",
+    "name": "SAGA Choreography v2 — Todos os Serviços",
+    "description": "Collection completa de todos os serviços baseada em histórias de usuário.\n\n## Serviços cobertos\n- **order-service** (porta 8080) — REST + Kafka producer\n- **payment-service** (porta 8081) — Kafka consumer/producer + Actuator\n- **inventory-service** (porta 8082) — Kafka consumer/producer + Actuator\n\n## Dados de seed\n\n**Usuários (payment-service)**\n| ID | Saldo |\n|----|-------|\n| 1  | R$ 1.000,00 |\n| 2  | R$ 1.000,00 |\n| 3  | R$ 1.000,00 |\n\n**Produtos (catálogo interno)**\n| ID | Preço | Estoque |\n|----|-------|---------|\n| 1  | R$ 100,00 | 5 unid. |\n| 2  | R$ 200,00 | 5 unid. |\n| 3  | R$ 300,00 | 5 unid. |\n\n## Como usar\n1. Suba o ambiente: `docker-compose up -d`\n2. Aguarde os serviços ficarem saudáveis (~30s)\n3. Execute as pastas na ordem (US-00 → US-09)\n4. Para testes de esgotamento, execute em sequência e aguarde ~2s entre requests\n\n## Variáveis\n- `baseUrl`: URL base do order-service (padrão: http://localhost:8080)\n- `paymentBaseUrl`: URL base do payment-service (padrão: http://localhost:8081)\n- `inventoryBaseUrl`: URL base do inventory-service (padrão: http://localhost:8082)\n- `lastOrderId`: preenchido automaticamente pelo test script após cada POST",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "version": {
+      "major": 1,
+      "minor": 0,
+      "patch": 0
+    }
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080",
+      "type": "string",
+      "description": "URL base do order-service"
+    },
+    {
+      "key": "paymentBaseUrl",
+      "value": "http://localhost:8081",
+      "type": "string",
+      "description": "URL base do payment-service"
+    },
+    {
+      "key": "inventoryBaseUrl",
+      "value": "http://localhost:8082",
+      "type": "string",
+      "description": "URL base do inventory-service"
+    },
+    {
+      "key": "lastOrderId",
+      "value": "",
+      "type": "string",
+      "description": "Preenchido automaticamente após POST bem-sucedido"
+    }
+  ],
+  "item": [
+    {
+      "name": "US-00 · Verificar saúde dos serviços",
+      "description": "Como operador, quero verificar se todos os serviços estão saudáveis antes de executar os testes.",
+      "item": [
+        {
+          "name": "Health Check — Order Service",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/actuator/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["actuator", "health"]
+            },
+            "description": "Verifica saúde do order-service incluindo DB e Kafka."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status HTTP 200', () => {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Serviço está UP', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.status).to.eql('UP');",
+                  "});",
+                  "",
+                  "pm.test('Banco de dados UP', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.components.db.status).to.eql('UP');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Métricas Prometheus — Order Service",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/actuator/prometheus",
+              "host": ["{{baseUrl}}"],
+              "path": ["actuator", "prometheus"]
+            },
+            "description": "Verifica exposição de métricas no formato Prometheus."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status HTTP 200', () => {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Content-Type é text/plain', () => {",
+                  "    pm.expect(pm.response.headers.get('Content-Type')).to.include('text/plain');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Swagger UI — Documentação da API",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/swagger-ui/index.html",
+              "host": ["{{baseUrl}}"],
+              "path": ["swagger-ui", "index.html"]
+            },
+            "description": "Acessa a interface Swagger UI gerada pelo springdoc-openapi."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Swagger UI acessível (200)', () => {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "US-01 · Criar pedido com sucesso (Happy Path)",
+      "description": "Como cliente cadastrado, quero criar um pedido com um produto disponível e saldo suficiente, para que a SAGA seja concluída com sucesso e meu pedido fique com status ORDER_COMPLETED.",
+      "item": [
+        {
+          "name": "POST — Criar pedido (produto 1 · R$ 100,00)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": 1,\n  \"productId\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "orders"]
+            },
+            "description": "Cria um pedido para o usuário 1 (saldo: R$ 1.000) comprando o produto 1 (preço: R$ 100, estoque: 5). Espera-se que a SAGA complete com sucesso."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status HTTP 201 Created', () => {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "",
+                  "pm.test('Resposta tem orderId (UUID)', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.orderId).to.match(",
+                  "        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i",
+                  "    );",
+                  "    pm.collectionVariables.set('lastOrderId', body.orderId);",
+                  "    console.log('Order criada:', body.orderId);",
+                  "});",
+                  "",
+                  "pm.test('Status inicial é ORDER_CREATED', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.orderStatus).to.eql('ORDER_CREATED');",
+                  "});",
+                  "",
+                  "pm.test('Mensagem de sucesso presente', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.message).to.be.a('string').and.not.empty;",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "201 Created — SAGA iniciada",
+              "originalRequest": {
+                "method": "POST",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"userId\": 1,\n  \"productId\": 1\n}"
+                }
+              },
+              "status": "Created",
+              "code": 201,
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"orderId\": \"550e8400-e29b-41d4-a716-446655440000\",\n  \"orderStatus\": \"ORDER_CREATED\",\n  \"message\": \"Order created successfully\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "POST — Criar pedido (produto 2 · R$ 200,00)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": 2,\n  \"productId\": 2\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "orders"]
+            },
+            "description": "Usuário 2 comprando produto 2 (R$ 200). SAGA deve completar com sucesso."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status HTTP 201 Created', () => {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "",
+                  "pm.test('orderId gerado', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.orderId).to.be.a('string');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "POST — Criar pedido (produto 3 · R$ 300,00)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": 3,\n  \"productId\": 3\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "orders"]
+            },
+            "description": "Usuário 3 comprando produto 3 (R$ 300). SAGA deve completar com sucesso."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status HTTP 201 Created', () => {",
+                  "    pm.response.to.have.status(201);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "US-02 · Consultar todos os pedidos",
+      "description": "Como cliente, quero listar todos os pedidos para acompanhar o status de cada SAGA.",
+      "item": [
+        {
+          "name": "GET — Listar todos os pedidos",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "orders"]
+            },
+            "description": "Retorna todos os pedidos com status atual. Execute após ~2s dos POSTs para ver ORDER_COMPLETED."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status HTTP 200 OK', () => {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Resposta tem array de orders', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body).to.have.property('orders');",
+                  "    pm.expect(body.orders).to.be.an('array');",
+                  "});",
+                  "",
+                  "pm.test('Cada pedido tem campos obrigatórios', () => {",
+                  "    const body = pm.response.json();",
+                  "    body.orders.forEach(order => {",
+                  "        pm.expect(order).to.have.property('orderId');",
+                  "        pm.expect(order).to.have.property('userId');",
+                  "        pm.expect(order).to.have.property('productId');",
+                  "        pm.expect(order).to.have.property('price');",
+                  "        pm.expect(order).to.have.property('orderStatus');",
+                  "        pm.expect(order.orderStatus).to.be.oneOf(",
+                  "            ['ORDER_CREATED', 'ORDER_COMPLETED', 'ORDER_CANCELLED']",
+                  "        );",
+                  "    });",
+                  "});",
+                  "",
+                  "const body = pm.response.json();",
+                  "const completed = body.orders.filter(o => o.orderStatus === 'ORDER_COMPLETED');",
+                  "const cancelled = body.orders.filter(o => o.orderStatus === 'ORDER_CANCELLED');",
+                  "const pending  = body.orders.filter(o => o.orderStatus === 'ORDER_CREATED');",
+                  "console.log(`Pedidos — COMPLETED: ${completed.length}, CANCELLED: ${cancelled.length}, PENDING: ${pending.length}`);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "200 OK — Lista de pedidos",
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"orders\": [\n    {\n      \"orderId\": \"550e8400-e29b-41d4-a716-446655440001\",\n      \"userId\": 1,\n      \"productId\": 1,\n      \"price\": 100.00,\n      \"orderStatus\": \"ORDER_COMPLETED\",\n      \"paymentStatus\": \"RESERVED\",\n      \"inventoryStatus\": \"RESERVED\",\n      \"failureMessages\": []\n    }\n  ]\n}"
+            }
+          ]
+        },
+        {
+          "name": "GET — Verificar SAGA completou (após ~2s)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "orders"]
+            },
+            "description": "Execute este request pelo menos 2 segundos após criar o pedido. A SAGA assíncrona deve ter processado os eventos de pagamento e inventário."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Aguarda 2s para a SAGA processar os eventos Kafka",
+                  "const delay = ms => new Promise(res => setTimeout(res, ms));",
+                  "await delay(2000);"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status HTTP 200 OK', () => {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Pelo menos um pedido COMPLETED ou CANCELLED', () => {",
+                  "    const body = pm.response.json();",
+                  "    const finalized = body.orders.filter(o =>",
+                  "        o.orderStatus === 'ORDER_COMPLETED' || o.orderStatus === 'ORDER_CANCELLED'",
+                  "    );",
+                  "    pm.expect(finalized.length).to.be.greaterThan(0,",
+                  "        'SAGA ainda não processou — tente aumentar o delay no pre-request'",
+                  "    );",
+                  "});",
+                  "",
+                  "pm.test('Pedidos COMPLETED têm paymentStatus e inventoryStatus RESERVED', () => {",
+                  "    const body = pm.response.json();",
+                  "    body.orders",
+                  "        .filter(o => o.orderStatus === 'ORDER_COMPLETED')",
+                  "        .forEach(o => {",
+                  "            pm.expect(o.paymentStatus).to.eql('RESERVED');",
+                  "            pm.expect(o.inventoryStatus).to.eql('RESERVED');",
+                  "        });",
+                  "});",
+                  "",
+                  "pm.test('Pedidos CANCELLED têm ao menos um status REJECTED', () => {",
+                  "    const body = pm.response.json();",
+                  "    body.orders",
+                  "        .filter(o => o.orderStatus === 'ORDER_CANCELLED')",
+                  "        .forEach(o => {",
+                  "            const hasRejection = o.paymentStatus === 'REJECTED'",
+                  "                || o.inventoryStatus === 'REJECTED';",
+                  "            pm.expect(hasRejection).to.be.true;",
+                  "        });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "US-03 · SAGA com pagamento rejeitado (saldo insuficiente)",
+      "description": "Como sistema, quero garantir que quando um usuário não tem saldo suficiente, o pedido seja automaticamente cancelado (ORDER_CANCELLED) e o estoque não seja comprometido.",
+      "item": [
+        {
+          "name": "POST — Pedido 1 de 4 (R$ 300 · saldo ok)",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": 1,\n  \"productId\": 3\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {"raw": "{{baseUrl}}/api/v1/orders", "host": ["{{baseUrl}}"], "path": ["api", "v1", "orders"]},
+            "description": "Pedido 1: R$ 300. Saldo restante: R$ 700."
+          },
+          "event": [{"listen": "test", "script": {"exec": ["pm.test('201 Created', () => pm.response.to.have.status(201));"], "type": "text/javascript"}}],
+          "response": []
+        },
+        {
+          "name": "POST — Pedido 2 de 4 (R$ 300 · saldo ok)",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": 1,\n  \"productId\": 3\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {"raw": "{{baseUrl}}/api/v1/orders", "host": ["{{baseUrl}}"], "path": ["api", "v1", "orders"]},
+            "description": "Pedido 2: R$ 300. Saldo restante: R$ 400."
+          },
+          "event": [{"listen": "test", "script": {"exec": ["pm.test('201 Created', () => pm.response.to.have.status(201));"], "type": "text/javascript"}}],
+          "response": []
+        },
+        {
+          "name": "POST — Pedido 3 de 4 (R$ 300 · saldo ok)",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": 1,\n  \"productId\": 3\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {"raw": "{{baseUrl}}/api/v1/orders", "host": ["{{baseUrl}}"], "path": ["api", "v1", "orders"]},
+            "description": "Pedido 3: R$ 300. Saldo restante: R$ 100."
+          },
+          "event": [{"listen": "test", "script": {"exec": ["pm.test('201 Created', () => pm.response.to.have.status(201));"], "type": "text/javascript"}}],
+          "response": []
+        },
+        {
+          "name": "POST — Pedido 4 de 4 (R$ 300 · saldo INSUFICIENTE)",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": 1,\n  \"productId\": 3\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {"raw": "{{baseUrl}}/api/v1/orders", "host": ["{{baseUrl}}"], "path": ["api", "v1", "orders"]},
+            "description": "Pedido 4: R$ 300 mas saldo disponível é R$ 100. payment-service vai rejeitar → ORDER_CANCELLED."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('201 Created (criação é síncrona, SAGA é assíncrona)', () => {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "",
+                  "pm.test('Status inicial ORDER_CREATED (cancelamento vem depois via Kafka)', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.orderStatus).to.eql('ORDER_CREATED');",
+                  "    pm.collectionVariables.set('lastOrderId', body.orderId);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "GET — Verificar ORDER_CANCELLED após saldo insuficiente",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {"raw": "{{baseUrl}}/api/v1/orders", "host": ["{{baseUrl}}"], "path": ["api", "v1", "orders"]},
+            "description": "Aguarde ~3s. O payment-service deve ter rejeitado o 4° pedido por saldo insuficiente."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": ["await new Promise(r => setTimeout(r, 3000));"],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Existe ao menos um pedido CANCELLED', () => {",
+                  "    const body = pm.response.json();",
+                  "    const cancelled = body.orders.filter(o => o.orderStatus === 'ORDER_CANCELLED');",
+                  "    pm.expect(cancelled.length).to.be.greaterThan(0);",
+                  "});",
+                  "",
+                  "pm.test('Pedido cancelado tem paymentStatus REJECTED e failureMessages', () => {",
+                  "    const body = pm.response.json();",
+                  "    const lastId = pm.collectionVariables.get('lastOrderId');",
+                  "    const order = body.orders.find(o => o.orderId === lastId);",
+                  "    if (order && order.orderStatus === 'ORDER_CANCELLED') {",
+                  "        pm.expect(order.paymentStatus).to.eql('REJECTED');",
+                  "        pm.expect(order.failureMessages).to.be.an('array').and.not.empty;",
+                  "    }",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "US-04 · SAGA com estoque insuficiente",
+      "description": "Como sistema, quero garantir que quando o estoque de um produto se esgota, os pedidos excedentes sejam cancelados e os pagamentos compensados (devolvidos).",
+      "item": [
+        {
+          "name": "POST — Pedidos 1-5 (esgotar estoque do produto 2)",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": 2,\n  \"productId\": 2\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {"raw": "{{baseUrl}}/api/v1/orders", "host": ["{{baseUrl}}"], "path": ["api", "v1", "orders"]},
+            "description": "Execute este request 5 vezes para esgotar o estoque do produto 2 (5 unidades). Execute manualmente ou use o runner com iterações = 5."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('lastOrderId', body.orderId);",
+                  "console.log(`Pedido ${pm.info.iteration + 1} criado: ${body.orderId}`);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "POST — Pedido 6 (estoque ESGOTADO)",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": 2,\n  \"productId\": 2\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {"raw": "{{baseUrl}}/api/v1/orders", "host": ["{{baseUrl}}"], "path": ["api", "v1", "orders"]},
+            "description": "Produto 2 tem apenas 5 unidades. Este 6° pedido deve ser cancelado por falta de estoque. O pagamento que foi reservado deve ser compensado (devolvido ao saldo do usuário)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('201 Created (cancelamento assíncrono via SAGA)', () => {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "",
+                  "pm.collectionVariables.set('lastOrderId', pm.response.json().orderId);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "GET — Verificar ORDER_CANCELLED por estoque",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {"raw": "{{baseUrl}}/api/v1/orders", "host": ["{{baseUrl}}"], "path": ["api", "v1", "orders"]},
+            "description": "Aguarda a SAGA processar o cancelamento por estoque insuficiente."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": ["await new Promise(r => setTimeout(r, 3000));"],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Existe pedido CANCELLED por estoque', () => {",
+                  "    const body = pm.response.json();",
+                  "    const lastId = pm.collectionVariables.get('lastOrderId');",
+                  "    const order = body.orders.find(o => o.orderId === lastId);",
+                  "    if (order) {",
+                  "        console.log('Pedido 6 status:', order.orderStatus, '| inventoryStatus:', order.inventoryStatus);",
+                  "        if (order.orderStatus === 'ORDER_CANCELLED') {",
+                  "            pm.expect(order.inventoryStatus).to.eql('REJECTED');",
+                  "        }",
+                  "    }",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "US-05 · Validação de entrada",
+      "description": "Como desenvolvedor, quero que a API rejeite requisições com dados inválidos com mensagens de erro claras, para que integrações mal formadas sejam identificadas rapidamente.",
+      "item": [
+        {
+          "name": "POST — Corpo vazio (sem userId nem productId)",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {"raw": "{{baseUrl}}/api/v1/orders", "host": ["{{baseUrl}}"], "path": ["api", "v1", "orders"]},
+            "description": "Corpo sem campos obrigatórios. Deve retornar 400 com VALIDATION_ERROR."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status HTTP 400 Bad Request', () => {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "",
+                  "pm.test('Código de erro VALIDATION_ERROR', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.code).to.eql('VALIDATION_ERROR');",
+                  "});",
+                  "",
+                  "pm.test('Mensagem menciona campos obrigatórios', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.message).to.include('userId').and.include('productId');",
+                  "});",
+                  "",
+                  "pm.test('Timestamp presente', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.timestamp).to.be.a('string').and.not.empty;",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "400 Bad Request — VALIDATION_ERROR",
+              "status": "Bad Request",
+              "code": 400,
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"code\": \"VALIDATION_ERROR\",\n  \"message\": \"userId: userId is required, productId: productId is required\",\n  \"timestamp\": \"2024-11-25T10:30:00Z\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "POST — userId nulo",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": 1\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {"raw": "{{baseUrl}}/api/v1/orders", "host": ["{{baseUrl}}"], "path": ["api", "v1", "orders"]},
+            "description": "Sem userId. Deve retornar 400."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().code).to.eql('VALIDATION_ERROR'));",
+                  "pm.test('Mensagem menciona userId', () => pm.expect(pm.response.json().message).to.include('userId'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "POST — userId = 0 (deve ser positivo)",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": 0,\n  \"productId\": 1\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {"raw": "{{baseUrl}}/api/v1/orders", "host": ["{{baseUrl}}"], "path": ["api", "v1", "orders"]},
+            "description": "userId = 0 viola @Positive. Deve retornar 400."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().code).to.eql('VALIDATION_ERROR'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "POST — userId negativo (-1)",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": -1,\n  \"productId\": 1\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {"raw": "{{baseUrl}}/api/v1/orders", "host": ["{{baseUrl}}"], "path": ["api", "v1", "orders"]},
+            "description": "userId negativo. Deve retornar 400."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().code).to.eql('VALIDATION_ERROR'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "POST — productId nulo",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": 1\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {"raw": "{{baseUrl}}/api/v1/orders", "host": ["{{baseUrl}}"], "path": ["api", "v1", "orders"]},
+            "description": "Sem productId. Deve retornar 400."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Mensagem menciona productId', () => pm.expect(pm.response.json().message).to.include('productId'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "POST — productId = 0",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": 1,\n  \"productId\": 0\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {"raw": "{{baseUrl}}/api/v1/orders", "host": ["{{baseUrl}}"], "path": ["api", "v1", "orders"]},
+            "description": "productId = 0 viola @Positive. Deve retornar 400."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "US-06 · Produto inexistente no catálogo",
+      "description": "Como cliente, quero receber um erro claro quando tento comprar um produto que não existe no catálogo, para que eu saiba corrigir meu pedido.",
+      "item": [
+        {
+          "name": "POST — productId inexistente no catálogo (999)",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": 1,\n  \"productId\": 999\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {"raw": "{{baseUrl}}/api/v1/orders", "host": ["{{baseUrl}}"], "path": ["api", "v1", "orders"]},
+            "description": "O catálogo interno só tem produtos 1, 2 e 3. productId = 999 dispara OrderDomainException."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status HTTP 400 Bad Request', () => {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "",
+                  "pm.test('Código ORDER_DOMAIN_ERROR', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.code).to.eql('ORDER_DOMAIN_ERROR');",
+                  "});",
+                  "",
+                  "pm.test('Mensagem indica produto não encontrado', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.message.toLowerCase()).to.satisfy(",
+                  "        m => m.includes('product') || m.includes('catalog') || m.includes('not found'),",
+                  "        'Mensagem deve indicar produto não encontrado'",
+                  "    );",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "400 Bad Request — ORDER_DOMAIN_ERROR",
+              "status": "Bad Request",
+              "code": 400,
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"code\": \"ORDER_DOMAIN_ERROR\",\n  \"message\": \"Product not found in catalog: 999\",\n  \"timestamp\": \"2024-11-25T10:30:00Z\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "POST — productId = 4 (fora do catálogo)",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": 1,\n  \"productId\": 4\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {"raw": "{{baseUrl}}/api/v1/orders", "host": ["{{baseUrl}}"], "path": ["api", "v1", "orders"]},
+            "description": "Produto 4 não existe no catálogo (apenas 1, 2, 3). Deve retornar 400."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('ORDER_DOMAIN_ERROR', () => pm.expect(pm.response.json().code).to.eql('ORDER_DOMAIN_ERROR'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "US-07 · Observabilidade — Monitoramento da SAGA",
+      "description": "Como SRE, quero acompanhar métricas da SAGA em tempo real para detectar anomalias no processamento de pedidos.",
+      "item": [
+        {
+          "name": "GET — Métricas HTTP (Prometheus)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {"raw": "{{baseUrl}}/actuator/prometheus", "host": ["{{baseUrl}}"], "path": ["actuator", "prometheus"]},
+            "description": "Exibe todas as métricas no formato Prometheus para scraping. Inclui http.server.requests, jvm.*, kafka.producer.*"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Contém métricas HTTP', () => {",
+                  "    pm.expect(pm.response.text()).to.include('http_server_requests');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "GET — Info do serviço",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {"raw": "{{baseUrl}}/actuator/info", "host": ["{{baseUrl}}"], "path": ["actuator", "info"]},
+            "description": "Informações do build e versão do serviço."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": ["pm.test('Status 200', () => pm.response.to.have.status(200));"],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "GET — OpenAPI JSON Spec (gerado pelo springdoc)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {"raw": "{{baseUrl}}/v3/api-docs", "host": ["{{baseUrl}}"], "path": ["v3", "api-docs"]},
+            "description": "Especificação OpenAPI 3.0 gerada automaticamente pelo springdoc-openapi em tempo de execução."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('É um spec OpenAPI válido', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.openapi).to.match(/^3\\./);",
+                  "    pm.expect(body.paths).to.have.property('/api/v1/orders');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "US-08 · Resiliência — Reprocessamento e Idempotência",
+      "description": "Como arquiteto, quero garantir que o sistema é idempotente e que reprocessamentos de eventos Kafka não causam duplicações.",
+      "item": [
+        {
+          "name": "GET — Estado antes do teste",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {"raw": "{{baseUrl}}/api/v1/orders", "host": ["{{baseUrl}}"], "path": ["api", "v1", "orders"]},
+            "description": "Captura snapshot do estado atual para comparação."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('orderCountBefore', body.orders.length);",
+                  "console.log('Pedidos antes:', body.orders.length);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "POST — Criar pedido para teste de idempotência",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": 3,\n  \"productId\": 1\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {"raw": "{{baseUrl}}/api/v1/orders", "host": ["{{baseUrl}}"], "path": ["api", "v1", "orders"]},
+            "description": "Cria um pedido legítimo. Cada chamada POST deve criar um pedido distinto (não é idempotente por design — cada chamada = novo pedido)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('lastOrderId', pm.response.json().orderId);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "GET — Verificar que apenas 1 pedido foi criado",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {"raw": "{{baseUrl}}/api/v1/orders", "host": ["{{baseUrl}}"], "path": ["api", "v1", "orders"]},
+            "description": "Verifica que o POST anterior criou exatamente 1 pedido (sem duplicações de eventos Kafka)."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": ["await new Promise(r => setTimeout(r, 2000));"],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Exatamente 1 pedido criado', () => {",
+                  "    const body = pm.response.json();",
+                  "    const countBefore = parseInt(pm.collectionVariables.get('orderCountBefore'));",
+                  "    pm.expect(body.orders.length).to.eql(countBefore + 1);",
+                  "});",
+                  "",
+                  "pm.test('Pedido criado tem status final (não duplicado)', () => {",
+                  "    const body = pm.response.json();",
+                  "    const lastId = pm.collectionVariables.get('lastOrderId');",
+                  "    const order = body.orders.find(o => o.orderId === lastId);",
+                  "    if (order) {",
+                  "        console.log('Status final do pedido:', order.orderStatus);",
+                  "        pm.expect(order.orderStatus).to.be.oneOf(['ORDER_CREATED', 'ORDER_COMPLETED', 'ORDER_CANCELLED']);",
+                  "    }",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "US-09 · Observabilidade de todos os serviços",
+      "description": "Como SRE, quero verificar a saúde e métricas dos três serviços simultaneamente para garantir que o ambiente completo está operacional antes de executar os testes de SAGA.",
+      "item": [
+        {
+          "name": "Payment Service — Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{paymentBaseUrl}}/actuator/health",
+              "host": ["{{paymentBaseUrl}}"],
+              "path": ["actuator", "health"]
+            },
+            "description": "Verifica saúde do payment-service (porta 8081). Inclui status do PostgreSQL (payment_db) e Kafka."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Payment Service UP (200)', () => pm.response.to.have.status(200));",
+                  "pm.test('Status é UP', () => pm.expect(pm.response.json().status).to.eql('UP'));",
+                  "pm.test('DB UP', () => { const b = pm.response.json(); if (b.components?.db) pm.expect(b.components.db.status).to.eql('UP'); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Payment Service — Métricas Prometheus",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{paymentBaseUrl}}/actuator/prometheus",
+              "host": ["{{paymentBaseUrl}}"],
+              "path": ["actuator", "prometheus"]
+            },
+            "description": "Métricas Prometheus do payment-service. Inclui kafka_consumer_records_consumed_total, jvm_memory_used_bytes."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Contém métricas JVM', () => pm.expect(pm.response.text()).to.include('jvm_'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Payment Service — OpenAPI Spec JSON",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{paymentBaseUrl}}/v3/api-docs",
+              "host": ["{{paymentBaseUrl}}"],
+              "path": ["v3", "api-docs"]
+            },
+            "description": "Spec OpenAPI do payment-service gerada em runtime pelo springdoc. Documenta contratos Kafka e actuator."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('É OpenAPI válido', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.openapi).to.match(/^3\\./);",
+                  "    pm.expect(body.info.title).to.include('Payment');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Payment Service — Swagger UI acessível",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{paymentBaseUrl}}/swagger-ui/index.html",
+              "host": ["{{paymentBaseUrl}}"],
+              "path": ["swagger-ui", "index.html"]
+            },
+            "description": "Verifica que o Swagger UI do payment-service está acessível."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": ["pm.test('Swagger UI 200', () => pm.response.to.have.status(200));"],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Inventory Service — Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{inventoryBaseUrl}}/actuator/health",
+              "host": ["{{inventoryBaseUrl}}"],
+              "path": ["actuator", "health"]
+            },
+            "description": "Verifica saúde do inventory-service (porta 8082). Inclui status do PostgreSQL (inventory_db) e Kafka."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Inventory Service UP (200)', () => pm.response.to.have.status(200));",
+                  "pm.test('Status é UP', () => pm.expect(pm.response.json().status).to.eql('UP'));",
+                  "pm.test('DB UP', () => { const b = pm.response.json(); if (b.components?.db) pm.expect(b.components.db.status).to.eql('UP'); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Inventory Service — Métricas Prometheus",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{inventoryBaseUrl}}/actuator/prometheus",
+              "host": ["{{inventoryBaseUrl}}"],
+              "path": ["actuator", "prometheus"]
+            },
+            "description": "Métricas Prometheus do inventory-service. Inclui kafka_consumer_records_consumed_total, jvm_memory_used_bytes."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Contém métricas JVM', () => pm.expect(pm.response.text()).to.include('jvm_'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Inventory Service — OpenAPI Spec JSON",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{inventoryBaseUrl}}/v3/api-docs",
+              "host": ["{{inventoryBaseUrl}}"],
+              "path": ["v3", "api-docs"]
+            },
+            "description": "Spec OpenAPI do inventory-service gerada em runtime. Documenta contratos Kafka e actuator."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('É OpenAPI válido', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.openapi).to.match(/^3\\./);",
+                  "    pm.expect(body.info.title).to.include('Inventory');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Inventory Service — Swagger UI acessível",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{inventoryBaseUrl}}/swagger-ui/index.html",
+              "host": ["{{inventoryBaseUrl}}"],
+              "path": ["swagger-ui", "index.html"]
+            },
+            "description": "Verifica que o Swagger UI do inventory-service está acessível."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": ["pm.test('Swagger UI 200', () => pm.response.to.have.status(200));"],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    }
+  ]
+}
